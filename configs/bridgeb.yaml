@@ -40,6 +40,10 @@ initialization:
 # Step 1: 深度变形模型配置
 # ============================================================================
 deformation:
+  # 是否使用新的方向 × log-depth B-spline grid（推荐）
+  use_directional_bspline: true
+  
+  # 旧版本配置（当 use_directional_bspline=false 时使用）
   monotonic_spline:
     type: monotonic_cubic
     num_knots: 10
@@ -53,6 +57,20 @@ deformation:
     sh_max_degree: 4
     max_scale_log: 0.3
     scale_regularization_weight: 0.01
+  
+  # 新版本：方向 × log-depth B-spline grid 配置
+  directional_bspline_grid:
+    n_alpha: 12  # alpha 方向控制点数量（推荐 8-16）
+    n_depth: 10  # log-depth 方向控制点数量（推荐 8-12）
+    alpha_method: asin  # 'asin' 或 'y_coord'
+    max_delta_log: 0.5  # delta 的最大值（log 空间）
+    spline_order: 3  # B-spline 阶数（cubic）
+  
+  # B-spline grid 约束损失权重
+  bspline_constraints:
+    lambda_mono: 0.1  # 单调性约束权重
+    lambda_smooth: 0.001  # 方向平滑正则权重（推荐 1e-3 ~ 1e-4）
+    lambda_far: 0.1  # 远景渐近约束权重
 
 # ============================================================================
 # Step 2: 几何一致性配置

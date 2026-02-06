@@ -15,6 +15,13 @@ from .far_field_mask import (
     create_far_field_masks,
     apply_far_field_mask_to_loss,
 )
+from .bspline_constraints import (
+    compute_monotonicity_loss,
+    compute_directional_smoothness_loss,
+    compute_far_field_asymptotic_loss,
+    compute_bspline_constraints_loss,
+    compute_bspline_constraints_loss_multi_view,
+)
 from .regularization_loss import RegularizationLoss
 
 __all__ = [
@@ -26,5 +33,10 @@ __all__ = [
     'create_far_field_mask',
     'create_far_field_masks',
     'apply_far_field_mask_to_loss',
+    'compute_monotonicity_loss',
+    'compute_directional_smoothness_loss',
+    'compute_far_field_asymptotic_loss',
+    'compute_bspline_constraints_loss',
+    'compute_bspline_constraints_loss_multi_view',
     'RegularizationLoss',
 ]

@@ -91,8 +91,16 @@ class RegularizationLoss:
         # 创建远景 mask
         far_masks = create_far_field_masks(depth_daps, self.far_threshold)
         
+        # 确保所有损失都是 tensor（与设备一致）
+        if log_depths:
+            device = log_depths[0].device
+            dtype = log_depths[0].dtype
+        else:
+            device = 'cpu'
+            dtype = torch.float32
+        
         # 1. log-depth 先验锚点损失
-        prior_loss = 0.0
+        prior_loss = torch.tensor(0.0, device=device, dtype=dtype)
         if self.lambda_prior > 0:
             prior_loss = compute_prior_anchor_loss_multi_view(
                 log_depths=log_depths,
@@ -104,7 +112,7 @@ class RegularizationLoss:
             )
         
         # 2. 球面平滑正则损失
-        smooth_loss = 0.0
+        smooth_loss = torch.tensor(0.0, device=device, dtype=dtype)
         if self.lambda_smooth > 0:
             # 对于远景，只参与平滑项
             # 这里简化处理：对所有像素计算平滑，但远景不参与几何对齐（在 Step 2 中处理）
@@ -119,12 +127,23 @@ class RegularizationLoss:
             )
         
         # 3. 方向变形约束损失
-        scale_loss = 0.0
+        # 确保初始化为 tensor（与设备一致）
+        if log_depths:
+            device = log_depths[0].device
+            dtype = log_depths[0].dtype
+        else:
+            device = 'cpu'
+            dtype = torch.float32
+        
+        scale_loss = torch.tensor(0.0, device=device, dtype=dtype)
         if self.lambda_scale > 0 and scale_modules is not None:
-            scale_loss = compute_scale_constraint_loss(
-                scale_modules=scale_modules,
-                weight=self.lambda_scale,
-            )
+            # 过滤掉 None 值（新版本不使用 scale_module）
+            valid_scale_modules = [m for m in scale_modules if m is not None]
+            if len(valid_scale_modules) > 0:
+                scale_loss = compute_scale_constraint_loss(
+                    scale_modules=valid_scale_modules,
+                    weight=self.lambda_scale,
+                )
         
         # 总损失
         total_loss = prior_loss + smooth_loss + scale_loss

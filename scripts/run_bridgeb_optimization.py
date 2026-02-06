@@ -190,18 +190,82 @@ def main():
     # 创建深度重参数化模块
     log_time(f"🔧 创建深度重参数化模块...")
     t0 = time.time()
+    
+    # 从配置文件读取深度变形模型配置
+    deformation_config = config.get('deformation', {})
+    use_directional_bspline = bool(deformation_config.get('use_directional_bspline', True))
+    
+    if use_directional_bspline:
+        log_time(f"  使用新版本：方向 × log-depth B-spline grid")
+        # 新版本配置
+        bspline_config = deformation_config.get('directional_bspline_grid', {})
+        n_alpha = int(bspline_config.get('n_alpha', 12))
+        n_depth = int(bspline_config.get('n_depth', 10))
+        alpha_method = str(bspline_config.get('alpha_method', 'asin'))
+        max_delta_log = float(bspline_config.get('max_delta_log', 0.5))
+        spline_order = int(bspline_config.get('spline_order', 3))
+        
+        # 旧版本 spline 配置（用于 log_depth_min/max）
+        monotonic_spline_config = deformation_config.get('monotonic_spline', {})
+        log_depth_min = float(monotonic_spline_config.get('log_depth_min', -3.0))
+        log_depth_max = float(monotonic_spline_config.get('log_depth_max', 5.0))
+        
+        log_time(f"    n_alpha={n_alpha}, n_depth={n_depth}, alpha_method={alpha_method}")
+        log_time(f"    max_delta_log={max_delta_log}, log_depth_range=[{log_depth_min}, {log_depth_max}]")
+    else:
+        log_time(f"  使用旧版本：全局 spline + 方向缩放")
+        # 旧版本配置
+        monotonic_spline_config = deformation_config.get('monotonic_spline', {})
+        directional_scale_config = deformation_config.get('directional_scale', {})
+        
+        spline_type = str(monotonic_spline_config.get('type', 'monotonic_cubic'))
+        num_knots = int(monotonic_spline_config.get('num_knots', 10))
+        log_depth_min = float(monotonic_spline_config.get('log_depth_min', -3.0))
+        log_depth_max = float(monotonic_spline_config.get('log_depth_max', 5.0))
+        freeze_reference_point = bool(monotonic_spline_config.get('freeze_reference_point', True))
+        reference_log_depth = float(monotonic_spline_config.get('reference_log_depth', 0.0))
+        
+        scale_method = str(directional_scale_config.get('method', 'spherical_harmonics'))
+        sh_max_degree = int(directional_scale_config.get('sh_max_degree', 4))
+        max_scale_log = float(directional_scale_config.get('max_scale_log', 0.3))
+        
+        log_time(f"    spline_type={spline_type}, scale_method={scale_method}")
+    
     depth_reparam_modules = []
     for i, pano_name in enumerate(pano_names):
         t1 = time.time()
         log_time(f"  {pano_name}: 创建模块...")
-        module = DepthReparameterization(
-            height=H,
-            width=W,
-            spline_type="monotonic_cubic",
-            num_knots=10,
-            scale_method="spherical_harmonics",
-            sh_max_degree=4,
-        )
+        
+        if use_directional_bspline:
+            # 新版本：方向 × log-depth B-spline grid
+            module = DepthReparameterization(
+                height=H,
+                width=W,
+                use_directional_bspline=True,
+                n_alpha=n_alpha,
+                n_depth=n_depth,
+                alpha_method=alpha_method,
+                max_delta_log=max_delta_log,
+                log_depth_min=log_depth_min,
+                log_depth_max=log_depth_max,
+            )
+        else:
+            # 旧版本：全局 spline + 方向缩放
+            module = DepthReparameterization(
+                height=H,
+                width=W,
+                use_directional_bspline=False,
+                spline_type=spline_type,
+                num_knots=num_knots,
+                log_depth_min=log_depth_min,
+                log_depth_max=log_depth_max,
+                freeze_reference_point=freeze_reference_point,
+                reference_log_depth=reference_log_depth,
+                scale_method=scale_method,
+                sh_max_degree=sh_max_degree,
+                max_scale_log=max_scale_log,
+            )
+        
         depth_reparam_modules.append(module)
         log_time(f"  ✅ {pano_name} 模块创建完成 ({time.time() - t1:.2f}s)")
     log_time(f"✅ 所有模块创建完成 ({time.time() - t0:.2f}s)")
@@ -245,6 +309,12 @@ def main():
     scale_config = regularization_config.get('scale_constraint', {})
     lambda_scale = float(scale_config.get('weight', 0.01))  # 确保转换为浮点数
     
+    # B-spline 约束权重（新版本）
+    bspline_constraints_config = deformation_config.get('bspline_constraints', {})
+    lambda_mono = float(bspline_constraints_config.get('lambda_mono', 0.1))
+    lambda_smooth_bspline = float(bspline_constraints_config.get('lambda_smooth', 0.001))
+    lambda_far = float(bspline_constraints_config.get('lambda_far', 0.1))
+    
     # 优化器配置
     solver_config = optimization_config.get('solver', {})
     optimizer = solver_config.get('optimizer', 'adam')
@@ -275,6 +345,9 @@ def main():
         lambda_prior=lambda_prior,
         lambda_smooth=lambda_smooth,
         lambda_scale=lambda_scale,
+        lambda_mono=lambda_mono,
+        lambda_smooth_bspline=lambda_smooth_bspline,
+        lambda_far=lambda_far,
         optimizer=optimizer,
         lr=lr,
         max_iter=max_iter,

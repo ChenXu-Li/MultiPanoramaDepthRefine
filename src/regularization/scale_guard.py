@@ -28,11 +28,40 @@ def compute_scale_constraint_loss(
         loss: 标量损失值
     """
     if weight <= 0:
-        return torch.tensor(0.0, device=scale_modules[0].coeffs.device)
+        # 确定设备
+        if scale_modules and len(scale_modules) > 0:
+            if hasattr(scale_modules[0], 'coeffs'):
+                device = scale_modules[0].coeffs.device
+            elif hasattr(scale_modules[0], 'grid'):
+                device = scale_modules[0].grid.device
+            else:
+                device = 'cpu'
+        else:
+            device = 'cpu'
+        return torch.tensor(0.0, device=device)
     
-    total_loss = 0.0
+    if len(scale_modules) == 0:
+        return torch.tensor(0.0, device='cpu')
+    
+    # 确定设备和数据类型
+    first_module = scale_modules[0]
+    if hasattr(first_module, 'coeffs'):
+        device = first_module.coeffs.device
+        dtype = first_module.coeffs.dtype
+    elif hasattr(first_module, 'grid'):
+        device = first_module.grid.device
+        dtype = first_module.grid.dtype
+    else:
+        device = 'cpu'
+        dtype = torch.float32
+    
+    total_loss = torch.tensor(0.0, device=device, dtype=dtype)
+    valid_count = 0
     
     for scale_module in scale_modules:
+        if scale_module is None:
+            continue
+        
         # 获取缩放参数
         if hasattr(scale_module, 'coeffs'):
             # 球谐函数：使用系数
@@ -47,12 +76,13 @@ def compute_scale_constraint_loss(
         # L2 正则化：|g|^2
         loss = (params ** 2).mean()
         total_loss = total_loss + loss
+        valid_count += 1
     
     # 平均化
-    if len(scale_modules) > 0:
-        avg_loss = total_loss / len(scale_modules)
+    if valid_count > 0:
+        avg_loss = total_loss / valid_count
     else:
-        avg_loss = torch.tensor(0.0, device=scale_modules[0].coeffs.device if scale_modules else 'cpu')
+        avg_loss = torch.tensor(0.0, device=device, dtype=dtype)
     
     # 应用权重
     return weight * avg_loss

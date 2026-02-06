@@ -8,7 +8,7 @@ import pycolmap
 import time
 
 from ..geometry import MultiViewGeometryLoss
-from ..regularization import RegularizationLoss
+from ..regularization import RegularizationLoss, compute_bspline_constraints_loss_multi_view
 from ..deformation import DepthReparameterization
 
 def log_time(msg: str):
@@ -36,6 +36,10 @@ class TotalEnergyFunction:
         lambda_prior: float = 1.0,
         lambda_smooth: float = 0.01,
         lambda_scale: float = 0.01,
+        # B-spline 约束权重（新版本）
+        lambda_mono: float = 0.1,
+        lambda_smooth_bspline: float = 0.001,
+        lambda_far: float = 0.1,
         # 其他参数
         far_threshold: float = 100.0,
         use_robust_p2r: bool = True,
@@ -53,7 +57,10 @@ class TotalEnergyFunction:
             lambda_depth: 深度一致性损失权重
             lambda_prior: 先验锚点权重（必须 > 0）
             lambda_smooth: 平滑正则权重
-            lambda_scale: 方向变形约束权重
+            lambda_scale: 方向变形约束权重（旧版本）
+            lambda_mono: B-spline 单调性约束权重（新版本）
+            lambda_smooth_bspline: B-spline 方向平滑正则权重（新版本）
+            lambda_far: B-spline 远景渐近约束权重（新版本）
             far_threshold: 远景阈值（米）
             use_robust_p2r: 是否对 Point-to-Ray 使用 robust loss
             huber_delta_p2r: Point-to-Ray Huber loss 阈值
@@ -65,6 +72,9 @@ class TotalEnergyFunction:
             device: 计算设备
         """
         self.device = device
+        self.lambda_mono = lambda_mono
+        self.lambda_smooth_bspline = lambda_smooth_bspline
+        self.lambda_far = lambda_far
         
         # 创建几何一致性损失函数
         self.geometry_loss_fn = MultiViewGeometryLoss(
@@ -146,8 +156,11 @@ class TotalEnergyFunction:
             depths.append(depth_transformed)
             log_depths.append(log_depth_transformed)
             
-            # 获取方向缩放模块
-            scale_modules.append(depth_reparam.scale_module)
+            # 获取方向缩放模块（仅旧版本）
+            if depth_reparam.use_directional_bspline:
+                scale_modules.append(None)  # 新版本不使用 scale_module
+            else:
+                scale_modules.append(depth_reparam.scale_module)
         
         # 计算几何一致性损失
         try:
@@ -181,14 +194,46 @@ class TotalEnergyFunction:
             traceback.print_exc()
             raise
         
+        # 计算 B-spline 约束损失（如果使用新版本）
+        bspline_constraint_loss_dict = {
+            'total': torch.tensor(0.0, device=self.device),
+            'monotonicity': torch.tensor(0.0, device=self.device),
+            'smoothness': torch.tensor(0.0, device=self.device),
+            'far_field': torch.tensor(0.0, device=self.device),
+        }
+        
+        # 检查是否有使用方向 B-spline 的模块
+        control_points_list = []
+        for depth_reparam in depth_reparam_modules:
+            if depth_reparam.use_directional_bspline and depth_reparam.directional_bspline is not None:
+                control_points = depth_reparam.directional_bspline.get_control_points()
+                control_points_list.append(control_points)
+        
+        if len(control_points_list) > 0:
+            try:
+                bspline_constraint_loss_dict = compute_bspline_constraints_loss_multi_view(
+                    control_points_list=control_points_list,
+                    lambda_mono=self.lambda_mono,
+                    lambda_smooth=self.lambda_smooth_bspline,
+                    lambda_far=self.lambda_far,
+                    far_column_idx=-1,
+                )
+            except Exception as e:
+                log_time(f"    ⚠️  B-spline 约束损失计算失败: {e}")
+                import traceback
+                traceback.print_exc()
+                # 不抛出异常，继续优化
+        
         # 总损失
         total_loss = (
             geometry_loss_dict['total'] +
-            regularization_loss_dict['total']
+            regularization_loss_dict['total'] +
+            bspline_constraint_loss_dict['total']
         )
         
         return {
             'total': total_loss,
             'geometry': geometry_loss_dict,
             'regularization': regularization_loss_dict,
+            'bspline_constraints': bspline_constraint_loss_dict,
         }

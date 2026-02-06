@@ -18,6 +18,16 @@ def log_time(msg: str):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def safe_item(value):
+    """安全地获取 tensor 或 float 的值"""
+    if isinstance(value, torch.Tensor):
+        return value.item()
+    elif isinstance(value, (int, float)):
+        return float(value)
+    else:
+        return 0.0
+
+
 class JointOptimizationConfig:
     """联合优化配置"""
     def __init__(
@@ -29,6 +39,10 @@ class JointOptimizationConfig:
         lambda_prior: float = 1.0,
         lambda_smooth: float = 0.01,
         lambda_scale: float = 0.01,
+        # B-spline 约束权重（新版本）
+        lambda_mono: float = 0.1,
+        lambda_smooth_bspline: float = 0.001,
+        lambda_far: float = 0.1,
         # 优化器配置
         optimizer: str = "adam",
         lr: float = 1e-3,
@@ -53,6 +67,9 @@ class JointOptimizationConfig:
         self.lambda_prior = lambda_prior
         self.lambda_smooth = lambda_smooth
         self.lambda_scale = lambda_scale
+        self.lambda_mono = lambda_mono
+        self.lambda_smooth_bspline = lambda_smooth_bspline
+        self.lambda_far = lambda_far
         self.optimizer = optimizer
         self.lr = lr
         self.max_iter = max_iter
@@ -109,6 +126,9 @@ def optimize_multi_view_depth(
         lambda_prior=config.lambda_prior,
         lambda_smooth=config.lambda_smooth,
         lambda_scale=config.lambda_scale,
+        lambda_mono=config.lambda_mono,
+        lambda_smooth_bspline=config.lambda_smooth_bspline,
+        lambda_far=config.lambda_far,
         far_threshold=config.far_threshold,
         use_robust_p2r=config.use_robust_p2r,
         huber_delta_p2r=config.huber_delta_p2r,
@@ -139,12 +159,18 @@ def optimize_multi_view_depth(
         'geometry_depth': [],  # 原始深度一致性损失
         'regularization_prior': [],  # 原始先验损失
         'regularization_smooth': [],  # 原始平滑损失
-        'regularization_scale': [],  # 原始缩放约束损失
+        'regularization_scale': [],  # 原始缩放约束损失（旧版本）
+        'bspline_mono': [],  # B-spline 单调性约束损失
+        'bspline_smooth': [],  # B-spline 方向平滑正则损失
+        'bspline_far': [],  # B-spline 远景渐近约束损失
         'weighted_p2r': [],  # 加权 P2R 损失 (lambda_p2r * p2r)
         'weighted_depth': [],  # 加权深度损失 (lambda_depth * depth)
         'weighted_prior': [],  # 加权先验损失 (lambda_prior * prior)
         'weighted_smooth': [],  # 加权平滑损失 (lambda_smooth * smooth)
         'weighted_scale': [],  # 加权缩放损失 (lambda_scale * scale)
+        'weighted_bspline_mono': [],  # 加权 B-spline 单调性损失
+        'weighted_bspline_smooth': [],  # 加权 B-spline 平滑损失
+        'weighted_bspline_far': [],  # 加权 B-spline 远景损失
     }
     
     prev_energy = float('inf')
@@ -208,30 +234,52 @@ def optimize_multi_view_depth(
             raise
         
         # 记录历史（总是记录，用于分析权重）
-        history['total'].append(total_loss.item())
-        history['geometry_p2r'].append(loss_dict['geometry']['p2r'].item())
-        history['geometry_depth'].append(loss_dict['geometry']['depth'].item())
-        history['regularization_prior'].append(loss_dict['regularization']['prior'].item())
-        history['regularization_smooth'].append(loss_dict['regularization']['smooth'].item())
-        history['regularization_scale'].append(loss_dict['regularization']['scale'].item())
+        history['total'].append(safe_item(total_loss))
+        history['geometry_p2r'].append(safe_item(loss_dict['geometry']['p2r']))
+        history['geometry_depth'].append(safe_item(loss_dict['geometry']['depth']))
+        history['regularization_prior'].append(safe_item(loss_dict['regularization']['prior']))
+        history['regularization_smooth'].append(safe_item(loss_dict['regularization']['smooth']))
+        history['regularization_scale'].append(safe_item(loss_dict['regularization']['scale']))
+        
+        # 记录 B-spline 约束损失（新版本）
+        bspline_constraints = loss_dict.get('bspline_constraints', {})
+        history['bspline_mono'].append(safe_item(bspline_constraints.get('monotonicity', torch.tensor(0.0))))
+        history['bspline_smooth'].append(safe_item(bspline_constraints.get('smoothness', torch.tensor(0.0))))
+        history['bspline_far'].append(safe_item(bspline_constraints.get('far_field', torch.tensor(0.0))))
         
         # 记录加权损失（用于分析权重影响）
-        history['weighted_p2r'].append(config.lambda_p2r * loss_dict['geometry']['p2r'].item())
-        history['weighted_depth'].append(config.lambda_depth * loss_dict['geometry']['depth'].item())
-        history['weighted_prior'].append(config.lambda_prior * loss_dict['regularization']['prior'].item())
-        history['weighted_smooth'].append(config.lambda_smooth * loss_dict['regularization']['smooth'].item())
-        history['weighted_scale'].append(config.lambda_scale * loss_dict['regularization']['scale'].item())
+        p2r_val = safe_item(loss_dict['geometry']['p2r'])
+        depth_val = safe_item(loss_dict['geometry']['depth'])
+        prior_val = safe_item(loss_dict['regularization']['prior'])
+        smooth_val = safe_item(loss_dict['regularization']['smooth'])
+        scale_val = safe_item(loss_dict['regularization']['scale'])
+        bspline_mono_val = safe_item(bspline_constraints.get('monotonicity', torch.tensor(0.0)))
+        bspline_smooth_val = safe_item(bspline_constraints.get('smoothness', torch.tensor(0.0)))
+        bspline_far_val = safe_item(bspline_constraints.get('far_field', torch.tensor(0.0)))
+        
+        history['weighted_p2r'].append(config.lambda_p2r * p2r_val)
+        history['weighted_depth'].append(config.lambda_depth * depth_val)
+        history['weighted_prior'].append(config.lambda_prior * prior_val)
+        history['weighted_smooth'].append(config.lambda_smooth * smooth_val)
+        history['weighted_scale'].append(config.lambda_scale * scale_val)
+        history['weighted_bspline_mono'].append(config.lambda_mono * bspline_mono_val)
+        history['weighted_bspline_smooth'].append(config.lambda_smooth_bspline * bspline_smooth_val)
+        history['weighted_bspline_far'].append(config.lambda_far * bspline_far_val)
         
         # 打印进度
         iter_time = time.time() - iter_start_time
         if (step + 1) % config.print_interval == 0 or step == 0:
-            log_time(
+            bspline_total = safe_item(bspline_constraints.get('total', torch.tensor(0.0)))
+            log_msg = (
                 f"  Iter {step+1}/{config.max_iter}: "
-                f"total={total_loss.item():.6f}, "
-                f"p2r={loss_dict['geometry']['p2r'].item():.6f}, "
-                f"prior={loss_dict['regularization']['prior'].item():.6f} "
-                f"({iter_time:.2f}s)"
+                f"total={safe_item(total_loss):.6f}, "
+                f"p2r={safe_item(loss_dict['geometry']['p2r']):.6f}, "
+                f"prior={safe_item(loss_dict['regularization']['prior']):.6f}"
             )
+            if bspline_total > 0:
+                log_msg += f", bspline={bspline_total:.6f}"
+            log_msg += f" ({iter_time:.2f}s)"
+            log_time(log_msg)
         
         # 保存中间结果
         if output_dir is not None and (step + 1) % config.save_interval == 0:
@@ -245,11 +293,12 @@ def optimize_multi_view_depth(
                 save_depth_npy(depths_current[-1], save_path)
         
         # 收敛检查
-        if check_convergence(total_loss.item(), prev_energy, config.early_stop_threshold):
+        current_energy = safe_item(total_loss)
+        if check_convergence(current_energy, prev_energy, config.early_stop_threshold):
             print(f"  收敛于迭代 {step+1}")
             break
         
-        prev_energy = total_loss.item()
+        prev_energy = current_energy
     
     # 获取最终深度
     depths_opt = []
