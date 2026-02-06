@@ -1,0 +1,287 @@
+# MultiPanoramaDepthRefine 默认配置文件
+# 
+# 说明：
+# - 所有路径必须是绝对路径（数据在项目外）
+# - 中间文件和输出文件保存在项目内（由代码自动管理）
+# - 本文件是示例配置，实际使用时请复制并修改为场景特定配置
+
+# ============================================================================
+# 数据路径配置（必须使用绝对路径，数据在项目外）
+# ============================================================================
+paths:
+  # COLMAP 重建根目录（包含各场景的 sparse/0）
+  colmap_root: /root/autodl-tmp/data/colmap_STAGE1_4x
+  
+  # STAGE 数据集根目录（包含各场景）
+  stage_root: /root/autodl-tmp/data/STAGE1_4x
+  
+  # 场景名称（如 BridgeB, RoofTop, BridgeA）
+  scene_name: BridgeB
+  
+  # 全景图名称列表（不含扩展名）
+  # 这些 pano 将参与多视角联合优化
+  pano_names:
+    - point2_median
+    - point3_median
+    - point4_median
+    - point5_median
+  
+  # 相机名称子串（用于从 COLMAP 中查找对应的相机）
+  camera_name: pano_camera12
+
+# ============================================================================
+# 输出配置（项目内目录，由代码自动创建）
+# ============================================================================
+output:
+  # 项目根目录（用于生成 intermediate/ 和 outputs/ 的相对路径）
+  # 如果为 null，则使用配置文件所在目录的父目录
+  project_root: null
+  
+  # 是否保存中间结果
+  save_intermediate: true
+  
+  # 是否保存最终对齐深度图
+  save_aligned_depths: true
+  
+  # 是否生成一致的点云（可选）
+  generate_pointcloud: false
+  
+  # 是否保存可视化结果
+  save_visualizations: true
+  
+  # 可视化格式：'png' 或 'jpg'
+  viz_format: png
+
+# ============================================================================
+# Step 0: 初始化和验证配置
+# ============================================================================
+initialization:
+  # 是否验证相机位姿（冻结，不优化）
+  validate_poses: true
+  
+  # 是否验证 DAP 深度连续性
+  validate_depth_continuity: true
+  
+  # 是否验证深度单调性
+  validate_depth_monotonicity: true
+  
+  # 深度范围过滤（米）
+  depth_min: 0.1
+  depth_max: 100.0  # DAP 通常截断在 100m
+
+# ============================================================================
+# Step 1: 深度变形模型配置
+# ============================================================================
+deformation:
+  # 全局单调 spline 配置
+  monotonic_spline:
+    # Spline 类型：'monotonic_cubic' 或 'linear'
+    type: monotonic_cubic
+    
+    # Spline 控制点数量（log-depth 空间）
+    num_knots: 10
+    
+    # Spline 范围（log-depth 空间）
+    # 例如：log(0.1) ≈ -2.3, log(100) ≈ 4.6
+    log_depth_min: -3.0
+    log_depth_max: 5.0
+    
+    # 是否冻结参考点（防止尺度漂移）
+    freeze_reference_point: true
+    reference_log_depth: 0.0  # log(1.0) = 0
+  
+  # 方向相关缩放配置
+  directional_scale:
+    # 参数化方法：'spherical_harmonics' 或 'bspline_grid'
+    method: spherical_harmonics
+    
+    # 球谐函数最大阶数（仅当 method=spherical_harmonics 时）
+    sh_max_degree: 4  # 对应 (max_degree+1)^2 个系数
+    
+    # B-spline grid 分辨率（仅当 method=bspline_grid 时）
+    bspline_grid_resolution: [16, 8]  # [theta_resolution, phi_resolution]
+    
+    # 缩放幅度限制（log 空间）
+    # s = exp(g), |g| < max_scale_log
+    max_scale_log: 0.3
+    
+    # 缩放正则化权重（L2 正则）
+    scale_regularization_weight: 0.01
+
+# ============================================================================
+# Step 2: 跨视角几何一致性配置
+# ============================================================================
+geometry:
+  # Point-to-Ray 距离（主约束）
+  point_to_ray:
+    # 是否启用
+    enabled: true
+    
+    # 权重（必须显著大于 depth_consistency）
+    weight: 1.0
+    
+    # 采样策略：'all_pixels' 或 'sparse_sample'
+    sampling: all_pixels
+    
+    # 稀疏采样时的采样率（仅当 sampling=sparse_sample 时）
+    sparse_sample_rate: 0.1
+    
+    # 是否使用 robust loss（Huber）
+    use_robust_loss: true
+    huber_delta: 0.1  # 米
+  
+  # Ray-space 深度一致性（弱约束）
+  depth_consistency:
+    # 是否启用
+    enabled: true
+    
+    # 权重（必须显著小于 point_to_ray）
+    weight: 0.1
+    
+    # 是否使用 robust loss
+    use_robust_loss: false
+  
+  # 远景处理（硬规则）
+  far_field:
+    # 远景阈值（米），≥此深度的像素不参与几何对齐
+    far_threshold: 100.0
+    
+    # 远景是否参与平滑项（True = 仅平滑，False = 完全不参与）
+    apply_smoothness_to_far: true
+
+# ============================================================================
+# Step 3: 防退化护栏配置
+# ============================================================================
+regularization:
+  # log-depth 先验锚点（防止整体塌缩）
+  prior_anchor:
+    # 是否启用
+    enabled: true
+    
+    # 权重（必须非零，防止塌缩）
+    weight: 1.0
+    
+    # Loss 类型：'l2' 或 'huber'
+    loss_type: l2
+    
+    # Huber delta（仅当 loss_type=huber 时）
+    huber_delta: 0.1
+  
+  # 球面平滑正则
+  smoothness:
+    # 是否启用
+    enabled: true
+    
+    # 权重
+    weight: 0.01
+    
+    # 平滑类型：'l2' 或 'l1'
+    smooth_type: l2
+    
+    # 是否使用边缘感知平滑（基于 RGB）
+    edge_aware: false
+    
+    # RGB 边缘敏感度（仅当 edge_aware=true 时）
+    rgb_sigma: 10.0
+  
+  # 方向变形约束（防止 scale 爆炸）
+  scale_constraint:
+    # 是否启用
+    enabled: true
+    
+    # 权重（L2 正则化 g）
+    weight: 0.01
+
+# ============================================================================
+# Step 4: 联合优化配置
+# ============================================================================
+optimization:
+  # 优化器配置
+  solver:
+    # 优化器类型：'adam' 或 'sgd'
+    optimizer: adam
+    
+    # 学习率
+    lr: 1e-3
+    
+    # Adam 参数（仅当 optimizer=adam 时）
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 1e-8
+    
+    # SGD 参数（仅当 optimizer=sgd 时）
+    sgd_momentum: 0.9
+  
+  # 迭代配置
+  iteration:
+    # 最大迭代次数
+    max_iter: 1000
+    
+    # 提前停止阈值（能量变化率）
+    early_stop_threshold: 1e-6
+    
+    # 每 N 次迭代保存一次中间结果（用于调试）
+    save_interval: 100
+    
+    # 每 N 次迭代打印一次统计信息
+    print_interval: 10
+  
+  # 设备配置
+  device:
+    # 计算设备：'cuda' 或 'cpu'
+    device: cuda
+    
+    # GPU 设备 ID（仅当 device=cuda 时）
+    gpu_id: 0
+
+# ============================================================================
+# 调试配置
+# ============================================================================
+debug:
+  # 是否启用调试模式
+  enabled: false
+  
+  # 是否保存每步迭代的中间结果
+  save_iterations: false
+  
+  # 是否打印详细统计信息
+  verbose: true
+  
+  # 是否进行数值梯度检查（验证梯度计算正确性）
+  check_gradients: false
+  
+  # 是否可视化中间结果
+  visualize_intermediate: true
+
+# ============================================================================
+# 验证配置
+# ============================================================================
+validation:
+  # 是否在优化前后进行验证
+  validate_before_optimization: true
+  validate_after_optimization: true
+  
+  # 验证项
+  checks:
+    # 是否检查单调性
+    check_monotonicity: true
+    
+    # 是否检查连续性
+    check_continuity: true
+    
+    # 是否检查尺度退化（所有深度趋于常数）
+    check_scale_collapse: true
+    
+    # 是否检查远景稳定性
+    check_far_field_stability: true
+  
+  # 验证阈值
+  thresholds:
+    # 单调性违反率阈值（< 此值认为通过）
+    monotonicity_violation_rate: 0.01
+    
+    # 连续性梯度阈值（> 此值认为不连续）
+    continuity_gradient_threshold: 1.0
+    
+    # 尺度退化检测阈值（深度标准差 < 此值认为退化）
+    scale_collapse_std_threshold: 0.1

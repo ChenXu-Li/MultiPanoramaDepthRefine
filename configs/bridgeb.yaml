@@ -1,0 +1,143 @@
+# BridgeB 场景配置文件
+# 基于 default.yaml，针对 BridgeB 场景的特定配置
+
+# ============================================================================
+# 数据路径配置（BridgeB 场景）
+# ============================================================================
+paths:
+  colmap_root: /root/autodl-tmp/data/colmap_STAGE1_4x
+  stage_root: /root/autodl-tmp/data/STAGE1_4x
+  scene_name: BridgeB
+  pano_names:
+    - point2_median
+    - point3_median
+    - point4_median
+    - point5_median
+  camera_name: pano_camera12
+
+# ============================================================================
+# 输出配置
+# ============================================================================
+output:
+  project_root: null  # 使用配置文件所在目录的父目录
+  save_intermediate: true
+  save_aligned_depths: true
+  generate_pointcloud: true  # BridgeB 生成点云
+  save_visualizations: true
+  viz_format: png
+
+# ============================================================================
+# Step 0: 初始化配置
+# ============================================================================
+initialization:
+  validate_poses: true
+  validate_depth_continuity: true
+  validate_depth_monotonicity: true
+  depth_min: 0.1
+  depth_max: 100.0
+
+# ============================================================================
+# Step 1: 深度变形模型配置
+# ============================================================================
+deformation:
+  monotonic_spline:
+    type: monotonic_cubic
+    num_knots: 10
+    log_depth_min: -3.0
+    log_depth_max: 5.0
+    freeze_reference_point: true
+    reference_log_depth: 0.0
+  
+  directional_scale:
+    method: spherical_harmonics
+    sh_max_degree: 4
+    max_scale_log: 0.3
+    scale_regularization_weight: 0.01
+
+# ============================================================================
+# Step 2: 几何一致性配置
+# ============================================================================
+geometry:
+  point_to_ray:
+    enabled: true  # 必须启用，否则几何约束不会生效
+    weight: 0.3 # 几何一致性权重（主约束，必须远大于先验权重）
+    sampling: all_pixels
+    use_robust_loss: true
+    huber_delta: 0.05  # 从 0.1 降低到 0.05，对近景误差更敏感
+  
+  depth_consistency:
+    enabled: true
+    weight: 0.1
+    use_robust_loss: false
+  
+  far_field:
+    far_threshold: 99.0
+    apply_smoothness_to_far: true
+
+# ============================================================================
+# Step 3: 防退化护栏配置
+# ============================================================================
+regularization:
+  prior_anchor:
+    enabled: true
+    weight: 0.2  # 从 1.0 降低到 0.2，防止某些方向上的大偏移
+    loss_type: huber  # 从 "l2" 改为 "huber"，限制大偏差的惩罚
+    huber_delta: 0.2  # Huber delta（log-depth空间），允许小偏差但限制大偏差
+  
+  smoothness:
+    enabled: true
+    weight: 0.01
+    smooth_type: l2
+    edge_aware: false
+    rgb_sigma: 10.0
+  
+  scale_constraint:
+    enabled: true
+    weight: 0.01
+
+# ============================================================================
+# Step 4: 联合优化配置
+# ============================================================================
+optimization:
+  solver:
+    optimizer: adam
+    lr: 0.0005  # 从 0.001 降低到 0.0005，更精细的优化（5e-4）
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 1e-8
+  
+  iteration:
+    max_iter: 1000
+    early_stop_threshold: 0.0000001  # 从 1e-6 降低到 1e-7，更严格的收敛标准
+    save_interval: 50  # 从 100 改为 50，更频繁保存中间结果
+    print_interval: 10
+  
+  device:
+    device: cuda
+    gpu_id: 0
+
+# ============================================================================
+# 调试配置
+# ============================================================================
+debug:
+  enabled: false
+  save_iterations: false
+  verbose: true
+  check_gradients: false
+  visualize_intermediate: true
+
+# ============================================================================
+# 验证配置
+# ============================================================================
+validation:
+  validate_before_optimization: true
+  validate_after_optimization: true
+  checks:
+    check_monotonicity: true
+    check_continuity: true
+    check_scale_collapse: true
+    check_far_field_stability: true
+  thresholds:
+    monotonicity_violation_rate: 0.01
+    continuity_gradient_threshold: 1.0
+    scale_collapse_std_threshold: 0.1
